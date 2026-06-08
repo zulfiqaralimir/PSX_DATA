@@ -241,6 +241,71 @@ def scrape_news(ticker: str) -> list:
     return items[:15]
 
 
+def scrape_payouts(ticker: str) -> list:
+    """Fetch payout history for *ticker* via POST to /company/payouts."""
+    log.info("Fetching payouts for %s", ticker)
+    try:
+        resp = requests.post(
+            "https://dps.psx.com.pk/company/payouts",
+            data={"symbol": ticker.upper()},
+            headers={
+                **REQUEST_HEADERS,
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": f"https://dps.psx.com.pk/company/{ticker.upper()}",
+            },
+            timeout=20,
+        )
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+    except Exception as exc:
+        log.warning("Payouts fetch failed for %s: %s", ticker, exc)
+        return []
+
+    items = []
+    for row in soup.select("table tr")[1:]:   # skip header row
+        cells = row.find_all("td")
+        if len(cells) >= 4:
+            items.append({
+                "date":     cells[0].get_text(strip=True),
+                "fin_year": cells[1].get_text(strip=True),
+                "details":  cells[2].get_text(strip=True),
+                "closure":  cells[3].get_text(strip=True),
+            })
+    return items
+
+
+def _payouts_section_html(ticker: str, items: list) -> str:
+    if not items:
+        return (
+            f'<div class="news-section">'
+            f'<h2>Payouts — {ticker}</h2>'
+            f'<p class="no-news">No payout history found.</p>'
+            f'</div>'
+        )
+
+    rows = []
+    for item in items:
+        rows.append(
+            f'<tr>'
+            f'<td class="date-cell">{item["date"]}</td>'
+            f'<td>{item["fin_year"]}</td>'
+            f'<td><strong>{item["details"]}</strong></td>'
+            f'<td class="date-cell">{item["closure"]}</td>'
+            f'</tr>'
+        )
+
+    return (
+        f'<div class="news-section">'
+        f'<h2>Payouts — {ticker}</h2>'
+        f'<table class="news-table">'
+        f'<thead><tr>'
+        f'<th>Date</th><th>Financial Year</th><th>Details</th><th>Book Closure</th>'
+        f'</tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody>'
+        f'</table></div>'
+    )
+
+
 def _news_section_html(ticker: str, items: list) -> str:
     if not items:
         return (
@@ -300,6 +365,7 @@ def build_chart(
     gaps:        list,
     out_path:    Path,
     news_items:  list = None,
+    payouts:     list = None,
 ) -> None:
 
     intervals   = df["Interval"].tolist()
@@ -493,8 +559,9 @@ def build_chart(
     # ── Save ──────────────────────────────────────────────────────────────────
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    chart_div  = fig.to_html(include_plotlyjs="cdn", full_html=False)
-    news_block = _news_section_html(ticker, news_items or [])
+    chart_div     = fig.to_html(include_plotlyjs="cdn", full_html=False)
+    news_block    = _news_section_html(ticker, news_items or [])
+    payouts_block = _payouts_section_html(ticker, payouts or [])
 
     html = f"""<!DOCTYPE html>
 <html>
@@ -528,6 +595,7 @@ def build_chart(
 <body>
   <div class="page">
     {chart_div}
+    {payouts_block}
     {news_block}
   </div>
 </body>
@@ -579,20 +647,23 @@ def main():
     if len(day_df) < 2:
         log.warning("Only %d candle found — chart may look sparse.", len(day_df))
 
-    ldcp = get_ldcp(all_df, target_date)
-    gaps = detect_gaps(day_df)
-    news = scrape_news(ticker)
+    ldcp    = get_ldcp(all_df, target_date)
+    gaps    = detect_gaps(day_df)
+    news    = scrape_news(ticker)
+    payouts = scrape_payouts(ticker)
 
     log.info(
-        "Candles: %d | Gaps: %d | LDCP: %s | Day Open: %.2f | News items: %d",
+        "Candles: %d | Gaps: %d | LDCP: %s | Day Open: %.2f | News: %d | Payouts: %d",
         len(day_df), len(gaps),
         f"{ldcp:.2f}" if ldcp else "n/a",
         day_df["Open"].iloc[0],
         len(news),
+        len(payouts),
     )
 
     out_path = CHARTS_DIR / f"{ticker}_{target_date}.html"
-    build_chart(day_df, ticker, target_date, ldcp, gaps, out_path, news_items=news)
+    build_chart(day_df, ticker, target_date, ldcp, gaps, out_path,
+                news_items=news, payouts=payouts)
 
     print(f"[OK] {ticker} {target_date}  —  {len(day_df)} candles, {len(gaps)} gap(s)")
     print(f"     Saved: {out_path.resolve()}")
