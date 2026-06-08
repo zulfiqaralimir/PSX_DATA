@@ -175,7 +175,7 @@ def open_spreadsheet() -> gspread.Spreadsheet:
     # GitHub Actions: credentials passed as env var JSON string
     gc_env = os.environ.get("GOOGLE_CREDENTIALS")
     if gc_env:
-        info = json.loads(gc_env)
+        info = json.loads(gc_env.lstrip(u'﻿'))  # strip UTF-8 BOM if present
         creds = Credentials.from_service_account_info(info, scopes=SCOPES)
         log.info("Using GOOGLE_CREDENTIALS env var (GitHub Actions)")
     else:
