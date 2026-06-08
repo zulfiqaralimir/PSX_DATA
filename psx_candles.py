@@ -69,6 +69,27 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
+ANNOUNCEMENTS = {
+    "OBOY": {
+        "2025-12-29": {
+            "title": "Material Information",
+            "category": "Others",
+            "summary": {
+                "Disclosed":        "December 29, 2025",
+                "Type":             "Insider Sell",
+                "Executive":        "Mr. Khawaja Usman Arif",
+                "Transaction Date": "December 18, 2025",
+                "Shares Sold":      "207,000",
+                "Rate":             "Rs. 11.91 per share",
+                "Market":           "CDC Ready Market",
+                "Regulation":       "Clause 5.6.4 of PSX Regulations",
+                "Note":             "Transaction to be presented in "
+                                    "next board meeting",
+            },
+        },
+    },
+}
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)s  %(message)s",
