@@ -47,6 +47,12 @@ HISTORY_HEADERS = [
     "Change %", "Last Updated",
 ]
 
+INTRADAY_SHEET_NAME = "PSX Intraday OHLCV"
+INTRADAY_HEADERS = [
+    "Symbol", "Date", "Day", "Interval",
+    "Open", "High", "Low", "Close", "Volume",
+]
+
 # Scheduled Task Scheduler trigger times (24-hour HH:MM).
 # History is only appended when the script runs within ±5 min of these times.
 #
@@ -236,6 +242,43 @@ def append_history(data: dict, spreadsheet: gspread.Spreadsheet) -> None:
     log.info("[history] '%s' appended to '%s'", data["Symbol"], HISTORY_SHEET_NAME)
 
 
+# ── Mode 3: intraday OHLCV (append every run) ────────────────────────────────
+
+def get_interval_label(now: datetime) -> str:
+    """Return 'HH:MM-HH:MM' label for the trigger slot closest to *now*."""
+    triggers = TRIGGER_TIMES_FRIDAY if now.weekday() == 4 else TRIGGER_TIMES_WEEKDAY
+    now_min = now.hour * 60 + now.minute
+    best_idx, best_diff = 0, float("inf")
+    for i, t in enumerate(triggers):
+        d = abs(now_min - (t.hour * 60 + t.minute))
+        if d < best_diff:
+            best_diff, best_idx = d, i
+    curr = triggers[best_idx]
+    curr_str = f"{curr.hour:02d}:{curr.minute:02d}"
+    if best_idx == 0:
+        return f"Open-{curr_str}"
+    prev = triggers[best_idx - 1]
+    return f"{prev.hour:02d}:{prev.minute:02d}-{curr_str}"
+
+
+def append_intraday(data: dict, spreadsheet: gspread.Spreadsheet) -> None:
+    ws = get_or_create_worksheet(spreadsheet, INTRADAY_SHEET_NAME, INTRADAY_HEADERS)
+    now = datetime.now()
+    row = [
+        data["Symbol"],
+        now.strftime("%Y-%m-%d"),
+        now.strftime("%A"),
+        get_interval_label(now),
+        data["Open"],
+        data["High"],
+        data["Low"],
+        data["Current Price"],   # Close = latest price at scrape time
+        data["Volume"],
+    ]
+    ws.append_row(row, value_input_option="USER_ENTERED")
+    log.info("[intraday] '%s' appended to '%s'", data["Symbol"], INTRADAY_SHEET_NAME)
+
+
 # ── Trigger-time check ────────────────────────────────────────────────────────
 
 def is_scheduled_run() -> bool:
@@ -281,6 +324,7 @@ def main():
     try:
         spreadsheet = open_spreadsheet()
         update_latest(data, spreadsheet)
+        append_intraday(data, spreadsheet)
         if scheduled:
             append_history(data, spreadsheet)
     except FileNotFoundError:
@@ -290,10 +334,8 @@ def main():
         log.error("Google Sheets error: %s", exc)
         sys.exit(1)
 
-    if scheduled:
-        print(f"[OK] {ticker} -> updated 'PSX Stock Data' + appended to 'PSX Price History'")
-    else:
-        print(f"[OK] {ticker} -> updated 'PSX Stock Data' (manual run, history skipped)")
+    history_note = " + history" if scheduled else ""
+    print(f"[OK] {ticker} -> snapshot + intraday OHLCV{history_note}")
 
 
 if __name__ == "__main__":
