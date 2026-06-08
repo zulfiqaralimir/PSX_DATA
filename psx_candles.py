@@ -71,6 +71,22 @@ SCOPES = [
 
 ANNOUNCEMENTS = {
     "OBOY": {
+        "2026-01-14": {
+            "title": "Disclosure of Interest",
+            "category": "Others",
+            "summary": {
+                "Disclosed":        "January 14, 2026",
+                "Type":             "Insider Sell",
+                "Executive":        "Mr. Inam Ullah (Company Secretary)",
+                "Transaction Date": "January 13, 2026",
+                "Shares Sold":      "4,500",
+                "Rate":             "Rs. 13.31 per share",
+                "Market":           "CDC Ready Market",
+                "Regulation":       "Clause 5.6.4 of PSX Regulations",
+                "Note":             "Transaction to be presented in "
+                                    "next board meeting",
+            },
+        },
         "2025-12-29": {
             "title": "Material Information",
             "category": "Others",
@@ -324,6 +340,44 @@ def _payouts_section_html(ticker: str, items: list) -> str:
         f'</tr></thead>'
         f'<tbody>{"".join(rows)}</tbody>'
         f'</table></div>'
+    )
+
+
+def _manual_announcements_html(ticker: str) -> str:
+    entries = ANNOUNCEMENTS.get(ticker.upper(), {})
+    if not entries:
+        return ""
+
+    cards = []
+    for date_key, entry in sorted(entries.items(), reverse=True):
+        title    = entry.get("title", "")
+        category = entry.get("category", "")
+        summary  = entry.get("summary", {})
+
+        rows = "".join(
+            f'<tr><td style="color:#555;font-size:12px;white-space:nowrap;'
+            f'padding:5px 12px;border-bottom:1px solid #eef0f2;">{k}</td>'
+            f'<td style="padding:5px 12px;font-size:13px;border-bottom:1px solid #eef0f2;">{v}</td></tr>'
+            for k, v in summary.items()
+        )
+
+        cards.append(
+            f'<div style="margin-bottom:16px;border:1px solid #dde1e7;border-radius:4px;overflow:hidden;">'
+            f'<div style="background:#f4f6f8;padding:8px 12px;border-bottom:1px solid #dde1e7;'
+            f'display:flex;align-items:center;gap:10px;">'
+            f'<span style="font-size:12px;color:#666;">{date_key}</span>'
+            f'<strong style="font-size:13px;">{title}</strong>'
+            f'<span class="badge badge-other" style="margin-left:auto;">{category}</span>'
+            f'</div>'
+            f'<table style="width:100%;border-collapse:collapse;">{rows}</table>'
+            f'</div>'
+        )
+
+    return (
+        f'<div class="news-section">'
+        f'<h2>Curated Announcements — {ticker}</h2>'
+        f'{"".join(cards)}'
+        f'</div>'
     )
 
 
@@ -581,6 +635,7 @@ def build_chart(
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     chart_div     = fig.to_html(include_plotlyjs="cdn", full_html=False)
+    curated_block = _manual_announcements_html(ticker)
     news_block    = _news_section_html(ticker, news_items or [])
     payouts_block = _payouts_section_html(ticker, payouts or [])
 
@@ -616,6 +671,7 @@ def build_chart(
 <body>
   <div class="page">
     {chart_div}
+    {curated_block}
     {payouts_block}
     {news_block}
   </div>
@@ -686,10 +742,17 @@ def main():
     build_chart(day_df, ticker, target_date, ldcp, gaps, out_path,
                 news_items=news, payouts=payouts)
 
+    # Also write a date-independent copy for GitHub Pages embedding
+    import shutil
+    latest_path = CHARTS_DIR / f"{ticker}_candles.html"
+    shutil.copy2(out_path, latest_path)
+
     print(f"[OK] {ticker} {target_date}  —  {len(day_df)} candles, {len(gaps)} gap(s)")
     print(f"     Saved: {out_path.resolve()}")
+    print(f"     Latest: {latest_path.resolve()}")
 
-    webbrowser.open(out_path.resolve().as_uri())
+    if not os.environ.get("GITHUB_ACTIONS"):
+        webbrowser.open(out_path.resolve().as_uri())
 
 
 if __name__ == "__main__":

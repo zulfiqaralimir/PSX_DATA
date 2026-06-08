@@ -44,7 +44,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests beautifulsoup4 gspread google-auth pandas
+        run: pip install requests beautifulsoup4 gspread google-auth pandas plotly
 
       - name: Run PSX scraper for all tickers
         env:
@@ -70,3 +70,21 @@ jobs:
           else
             echo "All tickers completed successfully."
           fi
+
+      - name: Generate candlestick charts
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+        run: |
+          for ticker in KEL OGDC PPL HBL ENGRO OBOY FCEPL; do
+            echo "Generating chart for $ticker ..."
+            python psx_candles.py "$ticker" || echo "WARNING: chart failed for $ticker - continuing"
+          done
+
+      - name: Commit and push charts
+        run: |
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+          git add charts/
+          git diff --cached --quiet || git commit -m "chore: update PSX charts [skip ci]"
+          git push
