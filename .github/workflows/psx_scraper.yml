@@ -1,0 +1,76 @@
+name: PSX Data Scraper
+
+# ── Schedule ──────────────────────────────────────────────────────────────────
+# All times in UTC (PKT = UTC+5, so subtract 5 hours)
+#
+# Monday–Thursday (PKT 09:33, 10:30, 11:30, 12:30, 13:30, 14:30, 15:30, 16:33)
+#   UTC: 04:33, 05:30, 06:30, 07:30, 08:30, 09:30, 10:30, 11:33
+#
+# Friday (PKT 09:15, 10:15, 11:15, 12:00, 14:30, 15:30, 16:30)
+#   UTC: 04:15, 05:15, 06:15, 07:00, 09:30, 10:30, 11:30
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  schedule:
+    # Monday–Thursday
+    - cron: '33 4  * * 1-4'   # PKT 09:33
+    - cron: '30 5  * * 1-4'   # PKT 10:30
+    - cron: '30 6  * * 1-4'   # PKT 11:30
+    - cron: '30 7  * * 1-4'   # PKT 12:30
+    - cron: '30 8  * * 1-4'   # PKT 13:30
+    - cron: '30 9  * * 1-4'   # PKT 14:30
+    - cron: '30 10 * * 1-4'   # PKT 15:30
+    - cron: '33 11 * * 1-4'   # PKT 16:33
+    # Friday
+    - cron: '15 4  * * 5'     # PKT 09:15
+    - cron: '15 5  * * 5'     # PKT 10:15
+    - cron: '15 6  * * 5'     # PKT 11:15
+    - cron: '0  7  * * 5'     # PKT 12:00
+    - cron: '30 9  * * 5'     # PKT 14:30
+    - cron: '30 10 * * 5'     # PKT 15:30
+    - cron: '33 11 * * 5'     # PKT 16:33
+
+  workflow_dispatch:  # Allow manual trigger from GitHub Actions UI
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4 gspread google-auth pandas
+
+      - name: Run PSX scraper for all tickers
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+        run: |
+          TICKERS="KEL OGDC PPL HBL ENGRO OBOY FCEPL"
+          FAILED=""
+
+          for ticker in $TICKERS; do
+            echo "──────────────────────────────"
+            echo "Processing $ticker ..."
+            if python psx_to_sheets.py "$ticker"; then
+              echo "OK: $ticker"
+            else
+              echo "WARNING: $ticker failed — continuing with remaining tickers"
+              FAILED="$FAILED $ticker"
+            fi
+          done
+
+          echo "══════════════════════════════"
+          if [ -n "$FAILED" ]; then
+            echo "Completed with failures:$FAILED"
+            exit 1
+          else
+            echo "All tickers completed successfully."
+          fi
