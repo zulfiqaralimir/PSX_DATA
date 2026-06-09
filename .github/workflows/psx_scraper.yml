@@ -80,11 +80,17 @@ jobs:
           SHEET_ID: ${{ secrets.SHEET_ID }}
         run: |
           python psx_candles.py KEL
+          sleep 15
           python psx_candles.py OGDC
+          sleep 15
           python psx_candles.py PPL
+          sleep 15
           python psx_candles.py HBL
+          sleep 15
           python psx_candles.py ENGRO
+          sleep 15
           python psx_candles.py OBOY
+          sleep 15
           python psx_candles.py FCEPL
 
       - name: Push updated charts to GitHub

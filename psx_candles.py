@@ -34,6 +34,8 @@ _ensure("beautifulsoup4", "bs4")
 import os
 import json
 import logging
+import tempfile
+import time
 import webbrowser
 from datetime import date as dt_date, datetime, timedelta
 from pathlib import Path
@@ -68,6 +70,10 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
+
+# Sheet data is cached to a temp file so all 7 ticker invocations share one API read
+CACHE_FILE        = Path(tempfile.gettempdir()) / "psx_sheet_cache.json"
+CACHE_TTL_SECONDS = 600   # 10 minutes
 
 ANNOUNCEMENTS = {
     "OBOY": {
@@ -127,12 +133,39 @@ def open_sheet() -> gspread.Worksheet:
     return ss.worksheet(SHEET_TAB)
 
 
+def _fetch_with_retry(ws: gspread.Worksheet, max_retries: int = 3) -> list:
+    """Fetch all sheet records, retrying on 429 with exponential backoff."""
+    for attempt in range(max_retries):
+        try:
+            return ws.get_all_records()
+        except gspread.exceptions.APIError as exc:
+            status = getattr(exc.response, "status_code", 0)
+            if status == 429 and attempt < max_retries - 1:
+                wait = 60 * (2 ** attempt)   # 60s, 120s
+                log.warning("Rate limit (429) — waiting %ds (attempt %d/%d)", wait, attempt + 1, max_retries)
+                time.sleep(wait)
+            else:
+                raise
+
+
 # ── Data loading ──────────────────────────────────────────────────────────────
 
 def load_all(ticker: str) -> pd.DataFrame:
-    log.info("Loading all data for %s from '%s'", ticker, SHEET_TAB)
-    ws  = open_sheet()
-    raw = ws.get_all_records()
+    log.info("Loading data for %s from '%s'", ticker, SHEET_TAB)
+
+    cache_valid = (
+        CACHE_FILE.exists()
+        and (time.time() - CACHE_FILE.stat().st_mtime) < CACHE_TTL_SECONDS
+    )
+    if cache_valid:
+        log.info("Using cached sheet data (%s)", CACHE_FILE)
+        raw = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+    else:
+        ws  = open_sheet()
+        raw = _fetch_with_retry(ws)
+        CACHE_FILE.write_text(json.dumps(raw), encoding="utf-8")
+        log.info("Sheet data fetched and cached: %d rows", len(raw))
+
     df  = pd.DataFrame(raw)
 
     if df.empty:
