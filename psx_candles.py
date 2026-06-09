@@ -200,12 +200,15 @@ def get_ldcp(all_df: pd.DataFrame, target_date: dt_date) -> float | None:
 
 # ── Gap detection ─────────────────────────────────────────────────────────────
 
-def detect_gaps(df: pd.DataFrame) -> list:
+def detect_gaps(df: pd.DataFrame, x_col: str = "Interval") -> list:
     """
     True price gap: empty space between adjacent candles with zero overlap.
       Gap Up   — Low of next candle > High of previous candle (bullish)
       Gap Down — High of next candle < Low of previous candle (bearish)
     Overlapping candles are never flagged, regardless of Open/Close difference.
+
+    x_col: column to use for the x-coordinate labels in returned dicts.
+           Use "Interval" for single-day mode, "x_label" for continuous mode.
     """
     gaps = []
     for i in range(1, len(df)):
@@ -220,14 +223,13 @@ def detect_gaps(df: pd.DataFrame) -> list:
             continue
 
         if curr_low > prev_high:
-            # Gap Up: shade between previous High and next Low
             size = curr_low - prev_high
             pct  = size / prev_high
             if pct < GAP_THRESHOLD:
                 continue
             gaps.append({
-                "interval_prev": df["Interval"].iloc[i - 1],
-                "interval_curr": df["Interval"].iloc[i],
+                "interval_prev": df[x_col].iloc[i - 1],
+                "interval_curr": df[x_col].iloc[i],
                 "y0":  prev_high,
                 "y1":  curr_low,
                 "diff": round(size, 4),
@@ -236,14 +238,13 @@ def detect_gaps(df: pd.DataFrame) -> list:
                 "idx":  i,
             })
         elif curr_high < prev_low:
-            # Gap Down: shade between next High and previous Low
             size = prev_low - curr_high
             pct  = size / prev_low
             if pct < GAP_THRESHOLD:
                 continue
             gaps.append({
-                "interval_prev": df["Interval"].iloc[i - 1],
-                "interval_curr": df["Interval"].iloc[i],
+                "interval_prev": df[x_col].iloc[i - 1],
+                "interval_curr": df[x_col].iloc[i],
                 "y0":  curr_high,
                 "y1":  prev_low,
                 "diff": round(-size, 4),
@@ -715,35 +716,292 @@ def build_chart(
     log.info("Chart saved: %s", out_path)
 
 
+# ── Continuous multi-day chart ────────────────────────────────────────────────
+
+_HTML_STYLES = """
+    body { font-family: Arial, sans-serif; margin: 0; background: #fff; color: #1a1a1a; }
+    .page { max-width: 1200px; margin: 0 auto; padding: 16px 20px 48px; }
+    .news-section { margin-top: 32px; }
+    .news-section h2 { font-size: 15px; font-weight: 600; color: #333; margin: 0 0 10px;
+                       padding-bottom: 8px; border-bottom: 2px solid #e4e4e4; }
+    .news-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .news-table th { text-align: left; padding: 8px 12px; background: #f4f6f8;
+                     border-bottom: 2px solid #dde1e7; color: #555; font-size: 12px;
+                     font-weight: 600; }
+    .news-table td { padding: 8px 12px; border-bottom: 1px solid #eef0f2;
+                     vertical-align: middle; }
+    .news-table tr:hover td { background: #f7f9ff; }
+    .badge { display: inline-block; padding: 2px 9px; border-radius: 3px;
+             font-size: 11px; font-weight: 600; color: #fff; white-space: nowrap; }
+    .badge-fin   { background: #1a6bbf; }
+    .badge-bm    { background: #d4820a; }
+    .badge-other { background: #6c757d; }
+    a.doc-link { color: #1a6bbf; text-decoration: none; font-size: 12px; }
+    a.doc-link:hover { text-decoration: underline; }
+    .date-cell { white-space: nowrap; color: #666; font-size: 12px; }
+    .no-news { color: #888; font-style: italic; font-size: 13px; }
+"""
+
+
+def build_continuous_chart(
+    all_df:     pd.DataFrame,
+    ticker:     str,
+    days:       int = 5,
+    out_path:   Path = None,
+    news_items: list = None,
+    payouts:    list = None,
+) -> None:
+    available_dates = sorted(all_df["Date"].unique())
+    if not available_dates:
+        raise ValueError(f"No data for ticker '{ticker}'.")
+
+    selected_dates = available_dates[-days:]
+    df = all_df[all_df["Date"].isin(selected_dates)].copy()
+    df["_sk"] = df["Interval"].str[:5]
+    df = df.sort_values(["Date", "_sk"]).drop(columns="_sk").reset_index(drop=True)
+
+    # X-axis labels: "09Jun 09:33-10:30"
+    df["x_label"] = (
+        df["Date"].apply(lambda d: datetime.strptime(str(d), "%Y-%m-%d").strftime("%d%b"))
+        + " " + df["Interval"]
+    )
+    labels = df["x_label"].tolist()
+
+    # Gap detection — includes overnight gaps between consecutive trading days
+    gaps = detect_gaps(df, x_col="x_label")
+
+    # LDCP = close before the first selected date
+    ldcp = get_ldcp(all_df, selected_dates[0])
+
+    # Day boundary labels for separators and annotations
+    day_first = {d: df[df["Date"] == d]["x_label"].iloc[0]  for d in selected_dates}
+    day_last  = {d: df[df["Date"] == d]["x_label"].iloc[-1] for d in selected_dates}
+
+    # ── Figure ────────────────────────────────────────────────────────────────
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.04,
+        row_heights=[0.72, 0.28],
+    )
+
+    fig.add_trace(
+        go.Candlestick(
+            x=labels,
+            open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
+            name=ticker,
+            increasing=dict(line=dict(color="#009900", width=1.5), fillcolor="rgba(0,153,0,0.30)"),
+            decreasing=dict(line=dict(color="#cc0000", width=1.5), fillcolor="rgba(204,0,0,0.30)"),
+            whiskerwidth=0.4,
+            hoverinfo="x+y",
+        ),
+        row=1, col=1,
+    )
+
+    vol_colors = [
+        "rgba(0,153,0,0.55)" if c >= o else "rgba(204,0,0,0.55)"
+        for o, c in zip(df["Open"], df["Close"])
+    ]
+    fig.add_trace(
+        go.Bar(
+            x=labels, y=df["Volume"],
+            name="Volume",
+            marker_color=vol_colors,
+            showlegend=False,
+            hovertemplate="%{x}<br>Volume: %{y:,.0f}<extra></extra>",
+        ),
+        row=2, col=1,
+    )
+
+    shapes      = []
+    annotations = []
+
+    # Vertical dashed separator at last candle of each day (except last day)
+    for date in selected_dates[:-1]:
+        shapes.append(dict(
+            type="line",
+            xref="x", yref="paper",
+            x0=day_last[date], x1=day_last[date],
+            y0=0, y1=1,
+            line=dict(color="#aaaaaa", width=1.5, dash="dash"),
+            layer="above",
+        ))
+
+    # Day label above the first candle of each day
+    for date in selected_dates:
+        date_label = datetime.strptime(str(date), "%Y-%m-%d").strftime("%d %b %Y")
+        annotations.append(dict(
+            x=day_first[date],
+            y=1.02,
+            xref="x", yref="paper",
+            text=f"<b>{date_label}</b>",
+            showarrow=False,
+            font=dict(size=10, color="#444444"),
+            xanchor="left",
+            yanchor="bottom",
+        ))
+
+    # Gap shading and annotations
+    for g in gaps:
+        fill_color   = "rgba(0,180,0,0.18)"  if g["up"] else "rgba(210,0,0,0.18)"
+        border_color = "rgba(0,140,0,0.70)"  if g["up"] else "rgba(180,0,0,0.70)"
+        text_color   = "#006600"             if g["up"] else "#990000"
+        direction    = "Gap Up"              if g["up"] else "Gap Down"
+
+        shapes.append(dict(
+            type="rect",
+            xref="x", yref="y",
+            x0=g["interval_prev"], x1=g["interval_curr"],
+            y0=g["y0"],            y1=g["y1"],
+            fillcolor=fill_color,
+            line=dict(color=border_color, width=1, dash="dot"),
+            layer="below",
+        ))
+        annotations.append(dict(
+            x=g["interval_curr"],
+            y=(g["y0"] + g["y1"]) / 2,
+            xref="x", yref="y",
+            text=f"{direction} {g['diff']:+.3f} PKR<br>({g['pct']:+.2f}%)",
+            showarrow=True, arrowhead=2, arrowsize=0.8,
+            arrowcolor=border_color, arrowwidth=1.2,
+            ax=28, ay=0,
+            font=dict(size=9, color=text_color),
+            align="left", bgcolor="white",
+            bordercolor=border_color, borderwidth=1, opacity=0.9,
+        ))
+
+    # LDCP reference line
+    if ldcp is not None:
+        fig.add_trace(
+            go.Scatter(
+                x=[labels[0], labels[-1]],
+                y=[ldcp, ldcp],
+                mode="lines",
+                name=f"LDCP  {ldcp:.2f}",
+                line=dict(color="#d4820a", dash="dot", width=1.5),
+                hovertemplate=f"LDCP  {ldcp:.2f}<extra></extra>",
+            ),
+            row=1, col=1,
+        )
+
+    # Price range with 8% padding
+    price_vals = pd.concat([df["High"], df["Low"]]).dropna()
+    if ldcp:
+        price_vals = pd.concat([price_vals, pd.Series([ldcp])])
+    p_min = price_vals.min()
+    p_max = price_vals.max()
+    p_pad = (p_max - p_min) * 0.08
+
+    fig.update_layout(
+        title=dict(
+            text=f"<b>{ticker}</b>  —  Continuous {len(selected_dates)} Days",
+            font=dict(size=17, family="Arial"),
+        ),
+        template="plotly_white",
+        height=680,
+        hovermode="x unified",
+        xaxis_rangeslider_visible=False,
+        shapes=shapes,
+        annotations=annotations,
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0, font=dict(size=11)),
+        margin=dict(l=65, r=55, t=70, b=45),
+        font=dict(family="Arial", size=11),
+        plot_bgcolor="#fafafa",
+        paper_bgcolor="white",
+    )
+    fig.update_xaxes(type="category", tickangle=-30, showgrid=True, gridcolor="#e8e8e8")
+    fig.update_yaxes(
+        title_text="Price (PKR)", tickformat=".2f",
+        showgrid=True, gridcolor="#e8e8e8",
+        range=[p_min - p_pad, p_max + p_pad],
+        row=1, col=1,
+    )
+    fig.update_yaxes(title_text="Volume", tickformat=",.0f", showgrid=False, row=2, col=1)
+
+    # ── Save ─────────────────────────────────────────────────────────────────
+    if out_path is None:
+        out_path = CHARTS_DIR / f"{ticker}_continuous.html"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    chart_div     = fig.to_html(include_plotlyjs="cdn", full_html=False)
+    curated_block = _manual_announcements_html(ticker)
+    news_block    = _news_section_html(ticker, news_items or [])
+    payouts_block = _payouts_section_html(ticker, payouts or [])
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>{ticker} — Continuous {len(selected_dates)} Days</title>
+  <style>{_HTML_STYLES}</style>
+</head>
+<body>
+  <div class="page">
+    {chart_div}
+    {curated_block}
+    {payouts_block}
+    {news_block}
+  </div>
+</body>
+</html>"""
+
+    out_path.write_text(html, encoding="utf-8")
+    log.info("Continuous chart saved: %s", out_path)
+    print(f"[OK] {ticker} continuous ({len(selected_dates)} days)  —  {len(df)} candles, {len(gaps)} gap(s)")
+    print(f"     Saved: {out_path.resolve()}")
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
-    if len(sys.argv) < 2:
+    args = sys.argv[1:]
+    if not args:
         print("Usage: python psx_candles.py <TICKER> [YYYY-MM-DD]")
-        print("  e.g. python psx_candles.py KEL")
-        print("  e.g. python psx_candles.py KEL 2026-06-10")
+        print("       python psx_candles.py <TICKER> --continuous [--days N]")
         sys.exit(1)
 
-    ticker = sys.argv[1].strip().upper()
+    ticker     = args[0].strip().upper()
+    continuous = "--continuous" in args
 
-    if len(sys.argv) >= 3:
-        try:
-            target_date = datetime.strptime(sys.argv[2].strip(), "%Y-%m-%d").date()
-        except ValueError:
-            log.error("Invalid date '%s' — use YYYY-MM-DD format.", sys.argv[2])
-            sys.exit(1)
+    if continuous:
+        days = 5
+        if "--days" in args:
+            idx = args.index("--days")
+            try:
+                days = int(args[idx + 1])
+            except (IndexError, ValueError):
+                log.error("--days requires an integer argument.")
+                sys.exit(1)
     else:
         target_date = dt_date.today()
+        date_args   = [a for a in args[1:] if not a.startswith("--")]
+        if date_args:
+            try:
+                target_date = datetime.strptime(date_args[0].strip(), "%Y-%m-%d").date()
+            except ValueError:
+                log.error("Invalid date '%s' — use YYYY-MM-DD format.", date_args[0])
+                sys.exit(1)
 
-    log.info("Ticker: %s | Date: %s", ticker, target_date)
+    log.info("Ticker: %s | Mode: %s", ticker, "continuous" if continuous else "single-day")
 
-    # Load data
     try:
         all_df = load_all(ticker)
     except Exception as exc:
         log.error("%s", exc)
         sys.exit(1)
 
+    news    = scrape_news(ticker)
+    payouts = scrape_payouts(ticker)
+
+    if continuous:
+        out_path = CHARTS_DIR / f"{ticker}_continuous.html"
+        build_continuous_chart(all_df, ticker, days=days, out_path=out_path,
+                               news_items=news, payouts=payouts)
+        if not os.environ.get("GITHUB_ACTIONS"):
+            webbrowser.open(out_path.resolve().as_uri())
+        return
+
+    # ── Single-day mode ───────────────────────────────────────────────────────
     day_df = get_day_df(all_df, target_date)
     if day_df.empty:
         available = sorted(all_df["Date"].unique())
@@ -757,10 +1015,8 @@ def main():
     if len(day_df) < 2:
         log.warning("Only %d candle found — chart may look sparse.", len(day_df))
 
-    ldcp    = get_ldcp(all_df, target_date)
-    gaps    = detect_gaps(day_df)
-    news    = scrape_news(ticker)
-    payouts = scrape_payouts(ticker)
+    ldcp = get_ldcp(all_df, target_date)
+    gaps = detect_gaps(day_df)   # uses default x_col="Interval"
 
     log.info(
         "Candles: %d | Gaps: %d | LDCP: %s | Day Open: %.2f | News: %d | Payouts: %d",
@@ -775,7 +1031,6 @@ def main():
     build_chart(day_df, ticker, target_date, ldcp, gaps, out_path,
                 news_items=news, payouts=payouts)
 
-    # Also write a date-independent copy for GitHub Pages embedding
     import shutil
     latest_path = CHARTS_DIR / f"{ticker}_candles.html"
     shutil.copy2(out_path, latest_path)
