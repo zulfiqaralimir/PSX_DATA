@@ -1,5 +1,8 @@
 name: PSX Data Scraper
 
+permissions:
+  contents: write
+
 # All times in UTC  (PKT = UTC+5, subtract 5 hours)
 #
 # Monday-Thursday  PKT: 09:33 10:30 11:30 12:30 13:30 14:30 15:30 16:33
@@ -76,15 +79,19 @@ jobs:
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           SHEET_ID: ${{ secrets.SHEET_ID }}
         run: |
-          for ticker in KEL OGDC PPL HBL ENGRO OBOY FCEPL; do
-            echo "Generating chart for $ticker ..."
-            python psx_candles.py "$ticker" || echo "WARNING: chart failed for $ticker - continuing"
-          done
+          python psx_candles.py KEL
+          python psx_candles.py OGDC
+          python psx_candles.py PPL
+          python psx_candles.py HBL
+          python psx_candles.py ENGRO
+          python psx_candles.py OBOY
+          python psx_candles.py FCEPL
 
-      - name: Commit and push charts
+      - name: Push updated charts to GitHub
         run: |
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git config --global user.name "github-actions[bot]"
+          git config --global user.email "actions@github.com"
+          git config --global user.name "GitHub Actions"
           git add charts/
-          git diff --cached --quiet || git commit -m "chore: update PSX charts [skip ci]"
+          git status
+          git diff --staged --quiet || git commit -m "chore: update intraday charts [skip ci]"
           git push
